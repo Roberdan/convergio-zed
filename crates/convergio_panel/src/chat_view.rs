@@ -3,8 +3,10 @@
 //! This component displays chat messages from convergio.db and handles
 //! user input for sending messages to Convergio agents.
 
-use crate::agent_invoke;
+use crate::agent_invoke::{self, StreamingCallback};
 use crate::convergio_db::{ChatMessage, ConvergioDb, MessageType};
+use crate::panel::ConvergioPanel;
+use parking_lot::Mutex;
 use chrono::{DateTime, Local, Utc};
 use client::Client;
 use collections::HashMap;
@@ -181,6 +183,8 @@ pub struct ConvergioChatView {
     workspace: WeakEntity<Workspace>,
     is_loading: bool,
     is_streaming: bool,
+    /// Current streaming text being received from the agent
+    streaming_text: Arc<Mutex<String>>,
     error_message: Option<String>,
     last_message_count: i64,
     /// Last known database modification time for efficient change detection
@@ -246,6 +250,7 @@ impl ConvergioChatView {
             workspace,
             is_loading: true,
             is_streaming: false,
+            streaming_text: Arc::new(Mutex::new(String::new())),
             error_message: None,
             last_message_count: 0,
             last_db_modified: None,
@@ -341,6 +346,7 @@ impl ConvergioChatView {
 
     /// Start polling for new messages using efficient modification time checking
     /// Polls every 200ms but only queries database when file is modified
+    /// Also refreshes the UI during streaming for real-time text display
     fn start_polling(&mut self, cx: &mut Context<Self>) {
         let task = cx.spawn(async move |this, cx| {
             loop {
@@ -348,9 +354,16 @@ impl ConvergioChatView {
                 cx.background_executor().timer(Duration::from_millis(200)).await;
 
                 // Check if we should poll (has session and database)
-                let should_check = this.update(cx, |this, _| {
-                    this.session_id.is_some() && this.db.is_some()
-                }).unwrap_or(false);
+                let (should_check, is_streaming) = this.update(cx, |this, _| {
+                    (this.session_id.is_some() && this.db.is_some(), this.is_streaming)
+                }).unwrap_or((false, false));
+
+                // If streaming, always notify to update the streaming text display
+                if is_streaming {
+                    let _ = this.update(cx, |_, cx| {
+                        cx.notify();
+                    });
+                }
 
                 if !should_check {
                     continue;
@@ -494,17 +507,27 @@ impl ConvergioChatView {
                 Ok(msg_id) => {
                     log::info!("Inserted user message {} to session {}", msg_id, session_id);
 
-                    // Update session ID and reload messages
+                    // Create streaming callback for real-time UI updates
+                    let streaming_text: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+                    let streaming_text_for_callback = streaming_text.clone();
+                    let streaming_callback: StreamingCallback = Arc::new(Mutex::new(move |text: &str| {
+                        let mut st = streaming_text_for_callback.lock();
+                        st.clear();
+                        st.push_str(text);
+                    }));
+
+                    // Update session ID, set streaming state, and store streaming_text reference
                     let _ = this.update(cx, |this, cx| {
                         this.session_id = Some(session_id.clone());
                         this.is_streaming = true;
+                        this.streaming_text = streaming_text.clone();
                         this.load_messages_for_session(&session_id, cx);
                     });
 
                     // Get all messages for context
                     let messages = db.messages_for_session(&session_id).unwrap_or_default();
 
-                    // Invoke the agent
+                    // Invoke the agent with streaming callback
                     log::info!("Invoking agent {} for session {}", agent_name, session_id);
                     let invoke_task = agent_invoke::invoke_agent(
                         db.clone(),
@@ -514,6 +537,7 @@ impl ConvergioChatView {
                         agent_name.clone(),
                         messages,
                         workspace_root,
+                        Some(streaming_callback),
                         executor,
                     );
 
@@ -536,6 +560,7 @@ impl ConvergioChatView {
                             // Reload messages and clear streaming state
                             let _ = this.update(cx, |this, cx| {
                                 this.is_streaming = false;
+                                this.streaming_text.lock().clear();
                                 this.load_messages_for_session(&session_id, cx);
                             });
 
@@ -552,6 +577,7 @@ impl ConvergioChatView {
                             log::error!("{}", error_msg);
                             let _ = this.update(cx, |this, cx| {
                                 this.is_streaming = false;
+                                this.streaming_text.lock().clear();
                                 this.error_message = Some(error_msg);
                                 cx.notify();
                             });
@@ -628,6 +654,15 @@ impl ConvergioChatView {
         log::info!("Processing handoff to agent: {} ({})", target_agent, display_name);
 
         workspace.update(cx, |workspace, cx| {
+            // Update the Convergio panel to mark the new agent as active
+            if let Some(panel) = workspace.panel::<ConvergioPanel>(cx) {
+                panel.update(cx, |panel, cx| {
+                    panel.active_agents.insert(target_agent.clone().into());
+                    log::info!("Panel updated: agent '{}' marked as active", target_agent);
+                    cx.notify();
+                });
+            }
+
             let chat_view = cx.new(|cx| {
                 ConvergioChatView::new(
                     agent_name.clone(),
@@ -664,6 +699,73 @@ impl ConvergioChatView {
 
         self.message_markdowns.insert(message.id, markdown.clone());
         markdown
+    }
+
+    /// Render streaming message bubble (partial response being received)
+    fn render_streaming_message(&self, text: &str, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bg_color = cx.theme().colors().editor_background;
+
+        // Create inline markdown for streaming text
+        let content: SharedString = text.to_string().into();
+        let lang_registry = self.language_registry.clone();
+        let markdown = cx.new(|cx| {
+            Markdown::new(content, lang_registry, None, cx)
+        });
+        let markdown_style = default_markdown_style(window, cx);
+
+        let message_bubble = div()
+            .max_w(rems(40.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                // Header with agent name and streaming indicator
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Label::new(self.agent_display_name.to_string())
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted)
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                Icon::new(IconName::ArrowCircle)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Accent)
+                            )
+                            .child(
+                                Label::new("typing...")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Accent)
+                            )
+                    )
+            )
+            .child(
+                // Message content with markdown rendering
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(bg_color)
+                    .child(
+                        MarkdownElement::new(markdown, markdown_style)
+                    )
+            );
+
+        // Assistant messages aligned to the left
+        div()
+            .w_full()
+            .flex()
+            .justify_start()
+            .px_3()
+            .py_2()
+            .child(message_bubble)
     }
 
     /// Render a single chat message
@@ -1056,11 +1158,24 @@ impl Render for ConvergioChatView {
                             let rendered: Vec<_> = messages.iter()
                                 .map(|msg| self.render_message(msg, window, cx).into_any_element())
                                 .collect();
+
+                            // Get streaming text if available
+                            let streaming_text = if self.is_streaming {
+                                let text = self.streaming_text.lock().clone();
+                                if !text.is_empty() { Some(text) } else { None }
+                            } else {
+                                None
+                            };
+
                             div()
                                 .flex()
                                 .flex_col()
                                 .py_2()
                                 .children(rendered)
+                                // Show streaming response as it arrives
+                                .when_some(streaming_text, |this, text| {
+                                    this.child(self.render_streaming_message(&text, window, cx))
+                                })
                                 .into_any_element()
                         }
                     )

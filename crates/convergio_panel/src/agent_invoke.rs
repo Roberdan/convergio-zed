@@ -13,11 +13,15 @@ use anthropic::{
 use futures::StreamExt;
 use gpui::{BackgroundExecutor, Task};
 use http_client::HttpClient;
+use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent_tools::{create_tool_result, execute_tool, get_agent_tools};
 use crate::convergio_db::{ChatMessage, ConvergioDb, MessageType};
+
+/// Streaming callback type for real-time text updates
+pub type StreamingCallback = Arc<Mutex<dyn FnMut(&str) + Send>>;
 
 /// Default model for Convergio agents
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
@@ -57,6 +61,9 @@ const MAX_TOOL_ITERATIONS: usize = 20;
 
 /// Invoke an agent with a user message
 /// Returns a task that streams the response and updates the database
+///
+/// # Arguments
+/// * `streaming_callback` - Optional callback for real-time streaming text updates
 pub fn invoke_agent(
     db: Arc<ConvergioDb>,
     http_client: Arc<dyn HttpClient>,
@@ -65,6 +72,7 @@ pub fn invoke_agent(
     agent_name: String,
     messages: Vec<ChatMessage>,
     workspace_root: Option<PathBuf>,
+    streaming_callback: Option<StreamingCallback>,
     executor: BackgroundExecutor,
 ) -> Task<Result<()>> {
     executor.spawn(async move {
@@ -164,6 +172,11 @@ pub fn invoke_agent(
                                 }
                                 ResponseContent::Text { text } => {
                                     response_text.push_str(&text);
+                                    // Call streaming callback for initial text
+                                    if let Some(ref callback) = streaming_callback {
+                                        let mut cb = callback.lock();
+                                        cb(&response_text);
+                                    }
                                 }
                                 _ => {}
                             }
@@ -171,6 +184,11 @@ pub fn invoke_agent(
                         Event::ContentBlockDelta { delta, .. } => match delta {
                             ContentDelta::TextDelta { text } => {
                                 response_text.push_str(&text);
+                                // Call streaming callback for real-time UI updates
+                                if let Some(ref callback) = streaming_callback {
+                                    let mut cb = callback.lock();
+                                    cb(&response_text);
+                                }
                             }
                             ContentDelta::InputJsonDelta { partial_json } => {
                                 current_tool_input_json.push_str(&partial_json);
