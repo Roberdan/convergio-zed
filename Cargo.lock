@@ -5270,6 +5270,7 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "brotli",
+ "buffer_diff",
  "client",
  "clock",
  "cloud_api_types",
@@ -5307,7 +5308,9 @@ dependencies = [
  "strum 0.27.2",
  "telemetry",
  "telemetry_events",
+ "text",
  "thiserror 2.0.17",
+ "time",
  "ui",
  "util",
  "uuid",
@@ -5412,8 +5415,10 @@ dependencies = [
  "anyhow",
  "buffer_diff",
  "client",
+ "clock",
  "cloud_llm_client",
  "codestral",
+ "collections",
  "command_palette_hooks",
  "copilot",
  "edit_prediction",
@@ -5422,18 +5427,20 @@ dependencies = [
  "feature_flags",
  "fs",
  "futures 0.3.31",
- "git",
  "gpui",
  "indoc",
  "language",
- "log",
+ "language_model",
  "lsp",
  "markdown",
  "menu",
  "multi_buffer",
  "paths",
+ "pretty_assertions",
  "project",
  "regex",
+ "release_channel",
+ "semver",
  "serde_json",
  "settings",
  "supermaven",
@@ -5446,6 +5453,7 @@ dependencies = [
  "workspace",
  "zed_actions",
  "zeta_prompt",
+ "zlog",
 ]
 
 [[package]]
@@ -8720,6 +8728,7 @@ dependencies = [
  "extension",
  "gpui",
  "language",
+ "lsp",
  "paths",
  "project",
  "schemars",
@@ -21046,7 +21055,7 @@ dependencies = [
 
 [[package]]
 name = "zed_proto"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "zed_extension_api 0.7.0",
 ]
