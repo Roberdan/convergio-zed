@@ -371,7 +371,8 @@ pub struct ConvergioPanel {
     collapsed_categories: HashSet<AgentCategory>,
     filter_editor: Entity<Editor>,
     filter_query: SharedString,
-    active_agents: HashSet<SharedString>,
+    /// Agents that have active chat sessions
+    pub active_agents: HashSet<SharedString>,
     show_active_only: bool,
     // Active agent pack preset
     active_pack: AgentPack,
