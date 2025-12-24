@@ -31,7 +31,7 @@ use workspace::{
     Workspace,
 };
 
-actions!(convergio_chat, [Send, Refresh]);
+actions!(convergio_chat, [Send, Refresh, NewConversation]);
 
 /// Agent name mapping for handoff detection
 /// Maps (short_name, full_name, display_name)
@@ -431,6 +431,32 @@ impl ConvergioChatView {
             self.load_messages_for_session(&session_id, cx);
         } else {
             self.load_latest_session(cx);
+        }
+    }
+
+    /// Start a new conversation (reset current session)
+    fn new_conversation(&mut self, _: &NewConversation, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(db) = self.db.clone() else {
+            return;
+        };
+
+        let agent_name = self.agent_name.to_string();
+
+        match db.create_session(&agent_name) {
+            Ok(new_session_id) => {
+                self.session_id = Some(new_session_id.clone());
+                self.messages.clear();
+                self.message_markdowns.clear(); // Clear cached markdown entities
+                self.streaming_text.lock().clear();
+                self.error_message = None;
+                log::info!("Created new conversation for agent: {}", agent_name);
+                cx.notify();
+            }
+            Err(e) => {
+                log::error!("Failed to create new session: {}", e);
+                self.error_message = Some(format!("Failed to create new conversation: {}", e));
+                cx.notify();
+            }
         }
     }
 
@@ -1096,6 +1122,7 @@ impl Render for ConvergioChatView {
             .key_context(self.dispatch_context(window, cx))
             .on_action(cx.listener(Self::send))
             .on_action(cx.listener(Self::refresh))
+            .on_action(cx.listener(Self::new_conversation))
             // Header
             .child(
                 div()
@@ -1124,19 +1151,43 @@ impl Render for ConvergioChatView {
                     )
                     .child(
                         div()
-                            .id("refresh-btn")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|this| this.bg(cx.theme().colors().element_hover))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.refresh(&Refresh, window, cx);
-                            }))
+                            .flex()
+                            .gap_2()
+                            // New Conversation button
                             .child(
-                                Icon::new(IconName::RotateCw)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted)
+                                div()
+                                    .id("new-conv-btn")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|this| this.bg(cx.theme().colors().element_hover))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.new_conversation(&NewConversation, window, cx);
+                                    }))
+                                    .child(
+                                        Icon::new(IconName::Plus)
+                                            .size(IconSize::Small)
+                                            .color(Color::Muted)
+                                    )
+                            )
+                            // Refresh button
+                            .child(
+                                div()
+                                    .id("refresh-btn")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|this| this.bg(cx.theme().colors().element_hover))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.refresh(&Refresh, window, cx);
+                                    }))
+                                    .child(
+                                        Icon::new(IconName::RotateCw)
+                                            .size(IconSize::Small)
+                                            .color(Color::Muted)
+                                    )
                             )
                     )
             )

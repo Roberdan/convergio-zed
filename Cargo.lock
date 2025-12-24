@@ -3714,6 +3714,7 @@ dependencies = [
  "log",
  "markdown",
  "menu",
+ "parking_lot",
  "picker",
  "project",
  "serde",
