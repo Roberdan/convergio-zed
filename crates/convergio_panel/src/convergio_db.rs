@@ -97,7 +97,10 @@ impl ConvergioDb {
         let connection = Connection::open_file(&db_path.to_string_lossy());
 
         // Enable WAL mode for better concurrent access
-        let _ = connection.exec("PRAGMA journal_mode=WAL;");
+        // If WAL mode fails, log but continue (database may already be in WAL mode)
+        if let Err(e) = connection.exec("PRAGMA journal_mode=WAL;") {
+            log::warn!("Failed to enable WAL mode: {}", e);
+        }
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -370,10 +373,10 @@ impl ConvergioDb {
                 total_cost = total_cost + ?
             WHERE id = ?
         "#;
-        let _ = conn.exec_bound::<(f64, ArcStr)>(update_query)?((
+        conn.exec_bound::<(f64, ArcStr)>(update_query)?((
             cost_usd,
             ArcStr::from(session_id),
-        ));
+        ))?;
 
         Ok(rows.into_iter().next().unwrap_or(0))
     }
